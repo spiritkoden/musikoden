@@ -9,6 +9,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include <SDL3/SDL.h>
+
 #include "decoder.h"
 
 static bool is_dir(const char *path) {
@@ -35,7 +37,7 @@ static int cmp_names(const void *a, const void *b) {
 static void scan_dir(Playlist *p, const char *dir) {
     DIR *d = opendir(dir);
     if (!d) {
-        fprintf(stderr, "playlist: cannot open directory: %s\n", dir);
+        SDL_Log("playlist: cannot open directory: %s", dir);
         return;
     }
 
@@ -48,7 +50,11 @@ static void scan_dir(Playlist *p, const char *dir) {
             continue;
         char path[4096];
         int n = snprintf(path, sizeof path, "%s/%s", dir, ent->d_name);
-        if (n > 0 && (size_t)n < sizeof path)
+        if (n <= 0 || (size_t)n >= sizeof path)
+            continue;
+        // an extension alone is not enough: a directory can be named "x.mp3"
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode))
             push(p, path);
     }
     closedir(d);
@@ -68,7 +74,7 @@ void playlist_build(Playlist *out, char **argv, int argc, int start) {
         } else if (is_audio_file(arg)) {
             push(out, arg);
         } else {
-            fprintf(stderr, "playlist: skipping (not audio): %s\n", arg);
+            SDL_Log("playlist: skipping (not audio): %s", arg);
         }
     }
 }

@@ -23,19 +23,23 @@
 #define VOLUME_STEP       0.05f
 #define STATUS_MS         2500
 #define LIST_PAGE         10
+#define OVERVIEW_RESIZE_MS 150
 
-#define MARGIN     24.0f
-#define OVERVIEW_H 64.0f
+// ui_scale is set in main() from the window's content scale
+#define UI_PX(v) ((float)(v) * ui_scale)
+
+#define MARGIN      UI_PX(24.0f)
+#define OVERVIEW_H  UI_PX(64.0f)
 // full scope tap, so the trace fills the box at any window width
 #define SCOPE_SAMPLES AUDIO_SCOPE_CAP
 
-#define ELEMENT_GAP 3.0f
-#define BOX_TOP_GAP 6.0f
+#define ELEMENT_GAP UI_PX(3.0f)
+#define BOX_TOP_GAP UI_PX(6.0f)
 
-#define TEXT_ROW_H    22.0f
+#define TEXT_ROW_H    UI_PX(22.0f)
 #define TEXT_ROW2_Y   (MARGIN + TEXT_ROW_H)
 #define TEXT_ROW3_Y   (TEXT_ROW2_Y + TEXT_ROW_H)
-#define TEXT_BLOCK_H  (TEXT_ROW_H + 24.0f)
+#define TEXT_BLOCK_H  (TEXT_ROW_H + UI_PX(24.0f))
 
 static const char *DEFAULT_FONTS[] = {
     "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
@@ -214,8 +218,14 @@ int main(int argc, char *argv[]) {
     }
     SDL_SetRenderVSync(renderer, 1);
 
+    // layout and text are in render-output pixels; scale them to keep the same
+    // physical size on high-density displays
+    float ui_scale = SDL_GetWindowDisplayScale(window);
+    if (!(ui_scale > 0.0f))
+        ui_scale = 1.0f;
+
     UI ui;
-    if (!ui_init(&ui, renderer, font_path, 18.0f))
+    if (!ui_init(&ui, renderer, font_path, 18.0f * ui_scale, ui_scale))
         SDL_Log("running without text overlay");
 
     Player player;
@@ -239,8 +249,10 @@ int main(int argc, char *argv[]) {
 
     float *scope_buf = (float *)malloc((size_t)SCOPE_SAMPLES * sizeof(float));
     WaveOverview overview = { 0 };
-    const float *ov_built_for = NULL;
+    uint64_t ov_built_load = 0;
     int ov_built_columns = -1;
+    int ov_pending_columns = -1;
+    Uint64 ov_pending_since = 0;
 
     bool running = true;
     bool scrubbing = false;
@@ -309,11 +321,30 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
+            // layout is in render-output pixels, so event coords must be too
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                ev.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+                ev.type == SDL_EVENT_MOUSE_MOTION) {
+                (void)SDL_ConvertEventToRenderCoordinates(renderer, &ev);
+            }
+
             switch (ev.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 running = false;
                 break;
+
+            case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+                float scale = SDL_GetWindowDisplayScale(window);
+                if (scale > 0.0f && scale != ui_scale) {
+                    ui_scale = scale;
+                    ui.scale = scale;
+                    if (ui.ready &&
+                        !TTF_SetFontSize(ui.font, 18.0f * ui_scale))
+                        SDL_Log("ui: could not resize font: %s", SDL_GetError());
+                }
+                break;
+            }
 
             case SDL_EVENT_KEY_DOWN:
                 // the playlist list is the one place repeats are wanted
@@ -387,7 +418,12 @@ int main(int argc, char *argv[]) {
                 case SDLK_LEFT:  player_seek_relative(&player, -SEEK_STEP_SECONDS); break;
                 case SDLK_RIGHT: player_seek_relative(&player, +SEEK_STEP_SECONDS); break;
                 case SDLK_HOME:  player_seek_seconds(&player, 0.0); break;
-                case SDLK_END:   player_seek_seconds(&player, player_duration(&player)); break;
+                case SDLK_END:
+                    // unlike a natural track end, seeking to the end should
+                    // stop rather than silently move on to the next track
+                    player_seek_seconds(&player, player_duration(&player));
+                    player_pause(&player);
+                    break;
                 case SDLK_UP:    player_adjust_volume(&player, +VOLUME_STEP); break;
                 case SDLK_DOWN:  player_adjust_volume(&player, -VOLUME_STEP); break;
                 case SDLK_N:     player_next(&player); break;
@@ -466,10 +502,24 @@ int main(int argc, char *argv[]) {
         player_tick(&player);
 
         int columns = (int)overview_rect.w;
-        if (columns != ov_built_columns || player.track.samples != ov_built_for) {
+        if (player.load_id != ov_built_load) {
+            // a new track always rebuilds immediately
             overview_build(&overview, &player.track, columns);
             ov_built_columns = columns;
-            ov_built_for = player.track.samples;
+            ov_built_load = player.load_id;
+        } else if (columns != ov_built_columns) {
+            // debounce resizes: rebuilding the whole waveform every frame is
+            // expensive on long tracks, so wait until the width settles
+            if (columns != ov_pending_columns) {
+                ov_pending_columns = columns;
+                ov_pending_since = now;
+            } else if (now - ov_pending_since >= OVERVIEW_RESIZE_MS) {
+                overview_build(&overview, &player.track, columns);
+                ov_built_columns = columns;
+            }
+        } else {
+            // keep the pending width in sync once the size is back to normal
+            ov_pending_columns = columns;
         }
 
         SDL_SetRenderDrawColor(renderer,
@@ -498,7 +548,7 @@ int main(int argc, char *argv[]) {
         }
         SDL_FRect name_box = {
             MARGIN, MARGIN + (float)line_h + BOX_TOP_GAP,
-            (float)w - 2.0f * MARGIN, (float)line_h + 8.0f
+            (float)w - 2.0f * MARGIN, (float)line_h + UI_PX(8.0f)
         };
         if (name_box.w < 1.0f) name_box.w = 1.0f;
 

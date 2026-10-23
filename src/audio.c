@@ -64,9 +64,18 @@ uint64_t audio_queued_frames(const AudioOut *a) {
     return (uint64_t)bytes / bytes_per_frame;
 }
 
-void audio_push(AudioOut *a, const float *frames, uint32_t n) {
-    if (!a->stream || n == 0)
-        return;
+bool audio_push(AudioOut *a, const float *frames, uint32_t n) {
+    if (!a->stream || !a->available)
+        return false;
+    if (n == 0)
+        return true;
+
+    int bytes = (int)((size_t)n * a->channels * sizeof(float));
+    if (!SDL_PutAudioStreamData(a->stream, frames, (int)bytes)) {
+        SDL_Log("audio: could not queue playback data: %s", SDL_GetError());
+        a->available = false;
+        return false;
+    }
 
     uint32_t ch = a->channels;
     for (uint32_t i = 0; i < n; ++i) {
@@ -77,9 +86,7 @@ void audio_push(AudioOut *a, const float *frames, uint32_t n) {
         a->scope[a->scope_written % AUDIO_SCOPE_CAP] = m;
         a->scope_written++;
     }
-
-    int bytes = (int)((size_t)n * ch * sizeof(float));
-    SDL_PutAudioStreamData(a->stream, frames, bytes);
+    return true;
 }
 
 void audio_scope_read(const AudioOut *a, float *dst, int n) {

@@ -5,13 +5,15 @@
 
 #include "playlist.h"
 
-bool ui_init(UI *ui, SDL_Renderer *r, const char *font_path, float ptsize) {
+bool ui_init(UI *ui, SDL_Renderer *r, const char *font_path, float ptsize,
+             float scale) {
     memset(ui, 0, sizeof *ui);
 
     if (!TTF_Init()) {
         SDL_Log("ui: TTF_Init failed: %s", SDL_GetError());
         return false;
     }
+    ui->scale = scale > 0.0f ? scale : 1.0f;
 
     ui->font = TTF_OpenFont(font_path, ptsize);
     if (!ui->font) {
@@ -112,9 +114,9 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
     if (!ui_measure(ui, "Ag", &ref_w, &line_h) || line_h <= 0)
         return;
 
-    const float pad      = 24.0f;
-    const float row_gap  = 8.0f;
-    const float sect_gap = 14.0f;
+    const float pad      = 24.0f * ui->scale;
+    const float row_gap  = 8.0f * ui->scale;
+    const float sect_gap = 14.0f * ui->scale;
 
     int key_col_w = 0;
     int desc_w_max = 0;
@@ -125,7 +127,8 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
         if (kw > key_col_w)  key_col_w = kw;
         if (dw > desc_w_max) desc_w_max = dw;
     }
-    float body_w = (float)key_col_w + 16.0f + (float)desc_w_max;
+    float key_gap = 16.0f * ui->scale;
+    float body_w = (float)key_col_w + key_gap + (float)desc_w_max;
 
     float panel_w = pad * 2.0f + body_w;
     float panel_h = pad * 2.0f + (float)n * (float)line_h
@@ -161,7 +164,7 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
     }
 
     float key_x  = panel.x + pad;
-    float desc_x = key_x + (float)key_col_w + 16.0f;
+    float desc_x = key_x + (float)key_col_w + key_gap;
     for (int i = 0; i < n; ++i) {
         ui_text(ui, rows[i].key, key_x, y, accent);
         ui_text(ui, rows[i].desc, desc_x, y, HELP_FG);
@@ -213,9 +216,10 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     if (!SDL_GetCurrentRenderOutputSize(r, &rw, &rh))
         return;
 
-    const float pad      = 20.0f;
-    const float sect_gap = 14.0f;
-    const float gut_gap  = 10.0f;
+    const float pad      = 20.0f * ui->scale;
+    const float sect_gap = 14.0f * ui->scale;
+    const float gut_gap  = 10.0f * ui->scale;
+    const float row_gap  = LIST_ROW_GAP * ui->scale;
 
     // widest row, so the panel hugs the list instead of the window
     float content_w = 0.0f;
@@ -228,8 +232,8 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     }
 
     float panel_w = pad + (float)gut_w + gut_gap + content_w + pad;
-    if (panel_w < LIST_MIN_W)
-        panel_w = LIST_MIN_W;
+    if (panel_w < LIST_MIN_W * ui->scale)
+        panel_w = LIST_MIN_W * ui->scale;
     if (panel_w > (float)rw * LIST_MAX_W)
         panel_w = (float)rw * LIST_MAX_W;
     if (panel_w > (float)rw)
@@ -242,14 +246,14 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     if (avail_h < (float)line_h)
         avail_h = (float)line_h;
 
-    float body_h = (float)count * ((float)line_h + LIST_ROW_GAP) - LIST_ROW_GAP;
+    float body_h = (float)count * ((float)line_h + row_gap) - row_gap;
     if (body_h < (float)line_h)
         body_h = (float)line_h;
     if (body_h > avail_h)
         body_h = avail_h;
 
-    int rows_visible = (int)((body_h + LIST_ROW_GAP)
-                             / ((float)line_h + LIST_ROW_GAP));
+    int rows_visible = (int)((body_h + row_gap)
+                             / ((float)line_h + row_gap));
     if (rows_visible < 1)
         rows_visible = 1;
 
@@ -289,11 +293,11 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
 
     // selection bar first, full panel width, drawn before the text clip
     float bar_y = rows_top + ((float)selected - (float)*first_visible)
-                            * ((float)line_h + LIST_ROW_GAP);
+                            * ((float)line_h + row_gap);
     if (count > 0 && selected >= *first_visible
         && bar_y + (float)line_h <= rows_bot) {
         SDL_FRect bar = { panel.x + 1.0f, bar_y,
-                          panel.w - 2.0f, (float)line_h + LIST_ROW_GAP };
+                          panel.w - 2.0f, (float)line_h + row_gap };
         SDL_SetRenderDrawColor(r, HELP_ACCENT.r, HELP_ACCENT.g,
                                HELP_ACCENT.b, 40);
         SDL_RenderFillRect(r, &bar);
@@ -314,7 +318,7 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     }
     for (int i = *first_visible; i < count; ++i) {
         float row_y = rows_top + ((float)i - (float)*first_visible)
-                               * ((float)line_h + LIST_ROW_GAP);
+                               * ((float)line_h + row_gap);
         if (row_y + (float)line_h > rows_bot)
             break;
         bool is_current = (i == current);
@@ -366,10 +370,10 @@ void ui_text_marquee(UI *ui, SDL_Renderer *r, const char *text,
         return;
     }
 
-    scroll->travel = (float)tw + TEXT_BOX_GAP;
+    scroll->travel = (float)tw + TEXT_BOX_GAP * ui->scale;
     if (scroll->offset < 0.0f || scroll->offset >= scroll->travel)
         scroll->offset = 0.0f;
-    scroll->offset += TEXT_BOX_SPEED * dt;
+    scroll->offset += TEXT_BOX_SPEED * ui->scale * dt;
     if (scroll->offset >= scroll->travel)
         scroll->offset = fmodf(scroll->offset, scroll->travel);
 
@@ -392,8 +396,9 @@ void ui_text_box(UI *ui, SDL_Renderer *r, const char *text,
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     panel_paint(r, box, border);
 
-    SDL_FRect inner = { box->x + 1.0f, box->y + 1.0f,
-                        box->w - 2.0f, box->h - 2.0f };
+    SDL_FRect inner = { box->x + ui->scale, box->y + ui->scale,
+                        box->w - 2.0f * ui->scale,
+                        box->h - 2.0f * ui->scale };
     if (inner.w < 1.0f) inner.w = 1.0f;
     if (inner.h < 1.0f) inner.h = 1.0f;
 

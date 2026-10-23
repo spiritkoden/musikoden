@@ -9,10 +9,12 @@
 typedef struct {
     TTF_Font        *font;
     TTF_TextEngine  *engine;
+    float            scale; // UI pixels per point (window content scale)
     bool             ready;
 } UI;
 
-bool ui_init(UI *ui, SDL_Renderer *r, const char *font_path, float ptsize);
+bool ui_init(UI *ui, SDL_Renderer *r, const char *font_path, float ptsize,
+             float scale);
 void ui_destroy(UI *ui);
 
 void ui_text(UI *ui, const char *text, float x, float y,

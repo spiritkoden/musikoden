@@ -18,6 +18,10 @@ typedef struct {
     int    count;
     int    current; // index of loaded track, or -1
 
+    // bumped on every player_open() attempt; lets the UI tell two loads apart
+    // even when the allocator reuses the previous sample buffer's address
+    uint64_t load_id;
+
     DecodedAudio track;
     AudioOut     audio;
 

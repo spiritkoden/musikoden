@@ -28,6 +28,8 @@ bool player_open(Player *p, int index) {
     if (index < 0 || index >= p->count)
         return false;
 
+    p->load_id++;
+
     audio_pause(&p->audio);
     audio_clear(&p->audio);
     audio_destroy(&p->audio);
@@ -43,13 +45,19 @@ bool player_open(Player *p, int index) {
     p->track   = track;
     p->current = index;
 
-    audio_init(&p->audio, track.sample_rate, track.channels);
-    audio_set_gain(&p->audio, p->volume);
-
     p->base_frame = 0;
     p->frames_put = 0;
     p->cursor     = 0;
-    p->playing    = true;
+    p->playing    = false;
+
+    if (!audio_init(&p->audio, track.sample_rate, track.channels)) {
+        SDL_Log("player: loaded '%s' but audio is unavailable; "
+                "playback disabled", p->paths[index]);
+        return true;
+    }
+
+    audio_set_gain(&p->audio, p->volume);
+    p->playing = true;
     audio_resume(&p->audio);
     SDL_Log("player: playing '%s' (%.1f s)", p->paths[index], player_duration(p));
     return true;
@@ -63,8 +71,11 @@ void player_destroy(Player *p) {
 }
 
 void player_play(Player *p) {
-    if (!p->track.samples)
+    if (!p->track.samples || !p->audio.available)
         return;
+    // pressing play at the very end replays the track instead of doing nothing
+    if (p->cursor >= p->track.frames && audio_queued_frames(&p->audio) == 0)
+        player_seek_seconds(p, 0.0);
     p->playing = true;
     audio_resume(&p->audio);
 }
@@ -82,7 +93,7 @@ void player_toggle(Player *p) {
 }
 
 void player_tick(Player *p) {
-    if (!p->track.samples || !p->playing)
+    if (!p->track.samples || !p->playing || !p->audio.available)
         return;
 
     uint64_t target = queue_target_frames(p);
@@ -94,7 +105,10 @@ void player_tick(Player *p) {
                              ? (uint32_t)remaining
                              : PUSH_CHUNK_FRAMES;
         const float *src = p->track.samples + p->cursor * p->track.channels;
-        audio_push(&p->audio, src, chunk);
+        if (!audio_push(&p->audio, src, chunk)) {
+            p->playing = false;
+            return;
+        }
         p->cursor     += chunk;
         p->frames_put += chunk;
     }
@@ -144,7 +158,12 @@ void player_seek_seconds(Player *p, double seconds) {
     if (seconds < 0.0)
         seconds = 0.0;
 
-    uint64_t f = (uint64_t)(seconds * (double)p->track.sample_rate);
+    // round to the nearest frame so seeking to the exact duration lands on
+    // the end even when the floating-point conversion is a hair short
+    double frame_pos = seconds * (double)p->track.sample_rate;
+    uint64_t f = frame_pos >= (double)p->track.frames
+                     ? p->track.frames
+                     : (uint64_t)(frame_pos + 0.5);
     f = clamp_frame(p, f);
 
     audio_clear(&p->audio);

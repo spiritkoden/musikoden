@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <SDL3/SDL.h>
+
 #include "dr_mp3.h"
 #include "dr_flac.h"
 #include "dr_wav.h"
@@ -32,8 +34,8 @@ static bool ext_is(const char *path, const char *want) {
 
 bool is_audio_file(const char *path) {
     return ext_is(path, "mp3") || ext_is(path, "flac") ||
-           ext_is(path, "ogg") || ext_is(path, "wav") ||
-           ext_is(path, "m4a");
+           ext_is(path, "ogg") || ext_is(path, "oga") ||
+           ext_is(path, "wav") || ext_is(path, "m4a");
 }
 
 static void i16_to_f32(const short *in, size_t count, float *out) {
@@ -172,7 +174,7 @@ static bool load_m4a(const char *path, DecodedAudio *out) {
             break;
     }
     if (t == mp4.track_count) {
-        fprintf(stderr, "decoder: %s: no AAC audio track\n", path);
+        SDL_Log("decoder: %s: no AAC audio track", path);
         goto done;
     }
     MP4D_track_t *tr = &mp4.track[t];
@@ -187,14 +189,14 @@ static bool load_m4a(const char *path, DecodedAudio *out) {
     if (tr->dsi_bytes > 0) {
         if (NeAACDecInit2(dec, tr->dsi, (unsigned long)tr->dsi_bytes,
                           &rate, &ch) < 0) {
-            fprintf(stderr, "decoder: %s: faad2 rejected the AAC config\n", path);
+            SDL_Log("decoder: %s: faad2 rejected the AAC config", path);
             goto done;
         }
     } else {
         unsigned nbytes = 0;
         if (!mp4_sample_read(&mp4, f, t, 0, &scratch, &scratch_cap, &nbytes) ||
             NeAACDecInit(dec, scratch, (unsigned long)nbytes, &rate, &ch) < 0) {
-            fprintf(stderr, "decoder: %s: faad2 init failed\n", path);
+            SDL_Log("decoder: %s: faad2 init failed", path);
             goto done;
         }
     }
@@ -261,16 +263,17 @@ bool decoded_audio_load(const char *path, DecodedAudio *out) {
     bool ok = false;
     if      (ext_is(path, "mp3"))  ok = load_mp3(path, out);
     else if (ext_is(path, "flac")) ok = load_flac(path, out);
-    else if (ext_is(path, "ogg"))  ok = load_ogg(path, out);
+    else if (ext_is(path, "ogg") || ext_is(path, "oga"))
+        ok = load_ogg(path, out);
     else if (ext_is(path, "wav"))  ok = load_wav(path, out);
     else if (ext_is(path, "m4a"))  ok = load_m4a(path, out);
     else {
-        fprintf(stderr, "decoder: unsupported extension: %s\n", path);
+        SDL_Log("decoder: unsupported extension: %s", path);
         return false;
     }
 
     if (!ok) {
-        fprintf(stderr, "decoder: failed to decode: %s\n", path);
+        SDL_Log("decoder: failed to decode: %s", path);
         memset(out, 0, sizeof *out);
     }
     return ok;

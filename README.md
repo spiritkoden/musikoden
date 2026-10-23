@@ -1,11 +1,12 @@
 # musikoden
 
 A minimal, keyboard-driven SDL3 music player with a waveform overview and live oscilloscope.
-Plays MP3, FLAC, WAV, OGG and M4A/AAC.
+Plays MP3, FLAC, WAV, OGG/OGA and M4A/AAC.
 
 ## Build
 
-Requires a C11 compiler, `make`, `pkg-config`, SDL3, SDL3_ttf and FAAD2.
+Requires a C11 compiler, `make`, `pkg-config`, SDL3 (3.2 or newer),
+SDL3_ttf and FAAD2.
 
 ```sh
 make deps          # Arch Linux

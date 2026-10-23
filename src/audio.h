@@ -33,7 +33,7 @@ void audio_set_gain(AudioOut *a, float gain);
 
 uint64_t audio_queued_frames(const AudioOut *a);
 
-void audio_push(AudioOut *a, const float *frames, uint32_t n);
+bool audio_push(AudioOut *a, const float *frames, uint32_t n);
 
 void audio_scope_read(const AudioOut *a, float *dst, int n);
 
