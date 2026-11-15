@@ -1,16 +1,19 @@
 #include "player.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include <SDL3/SDL.h>
 
 #include "playlist.h"
 
-static uint64_t queue_target_frames(const Player *p) {
-    return (uint64_t)p->track.sample_rate / 10u;
-}
-
 #define PUSH_CHUNK_FRAMES 4096u
+
+static uint64_t queue_target_frames(const Player *p) {
+    if (p->info.sample_rate == 0)
+        return PUSH_CHUNK_FRAMES;
+    return (uint64_t)p->info.sample_rate / 10u;
+}
 
 bool player_init(Player *p, char **paths, int count, int index) {
     memset(p, 0, sizeof *p);
@@ -24,6 +27,20 @@ bool player_init(Player *p, char **paths, int count, int index) {
     return true;
 }
 
+// (re)size the scratch decode buffer to hold at least `channels` channels of
+// PUSH_CHUNK_FRAMES frames.
+static bool ensure_scratch(Player *p, uint32_t channels) {
+    uint32_t cap = PUSH_CHUNK_FRAMES * (channels ? channels : 1u);
+    if (p->scratch && p->scratch_frames >= cap)
+        return true;
+    float *grown = (float *)realloc(p->scratch, (size_t)cap * sizeof(float));
+    if (!grown)
+        return false;
+    p->scratch        = grown;
+    p->scratch_frames = cap;
+    return true;
+}
+
 bool player_open(Player *p, int index) {
     if (index < 0 || index >= p->count)
         return false;
@@ -33,24 +50,36 @@ bool player_open(Player *p, int index) {
     audio_pause(&p->audio);
     audio_clear(&p->audio);
     audio_destroy(&p->audio);
-    decoded_audio_free(&p->track);
+    decoder_close(p->dec);
+    p->dec = NULL;
+    memset(&p->info, 0, sizeof p->info);
 
-    DecodedAudio track;
-    if (!decoded_audio_load(p->paths[index], &track)) {
+    AudioInfo info;
+    Decoder *dec = decoder_open(p->paths[index], &info);
+    if (!dec) {
         p->current = -1;
         p->playing = false;
         SDL_Log("player: failed to load %s", p->paths[index]);
         return false;
     }
-    p->track   = track;
+    p->dec     = dec;
+    p->info    = info;
     p->current = index;
+
+    if (!ensure_scratch(p, info.channels)) {
+        decoder_close(p->dec);
+        p->dec = NULL;
+        p->current = -1;
+        SDL_Log("player: out of memory loading %s", p->paths[index]);
+        return false;
+    }
 
     p->base_frame = 0;
     p->frames_put = 0;
-    p->cursor     = 0;
+    p->eof        = false;
     p->playing    = false;
 
-    if (!audio_init(&p->audio, track.sample_rate, track.channels)) {
+    if (!audio_init(&p->audio, info.sample_rate, info.channels)) {
         SDL_Log("player: loaded '%s' but audio is unavailable; "
                 "playback disabled", p->paths[index]);
         return true;
@@ -65,16 +94,17 @@ bool player_open(Player *p, int index) {
 
 void player_destroy(Player *p) {
     audio_destroy(&p->audio);
-    decoded_audio_free(&p->track);
+    decoder_close(p->dec);
+    free(p->scratch);
     memset(p, 0, sizeof *p);
     p->current = -1;
 }
 
 void player_play(Player *p) {
-    if (!p->track.samples || !p->audio.available)
+    if (!p->dec || !p->audio.available)
         return;
     // pressing play at the very end replays the track instead of doing nothing
-    if (p->cursor >= p->track.frames && audio_queued_frames(&p->audio) == 0)
+    if (p->eof && audio_queued_frames(&p->audio) == 0)
         player_seek_seconds(p, 0.0);
     p->playing = true;
     audio_resume(&p->audio);
@@ -93,27 +123,26 @@ void player_toggle(Player *p) {
 }
 
 void player_tick(Player *p) {
-    if (!p->track.samples || !p->playing || !p->audio.available)
+    if (!p->dec || !p->playing || !p->audio.available)
         return;
 
     uint64_t target = queue_target_frames(p);
-    while (p->cursor < p->track.frames) {
+    while (!p->eof) {
         if (audio_queued_frames(&p->audio) >= target)
             break;
-        uint64_t remaining = p->track.frames - p->cursor;
-        uint32_t chunk = (remaining < PUSH_CHUNK_FRAMES)
-                             ? (uint32_t)remaining
-                             : PUSH_CHUNK_FRAMES;
-        const float *src = p->track.samples + p->cursor * p->track.channels;
-        if (!audio_push(&p->audio, src, chunk)) {
+        uint32_t got = decoder_read(p->dec, p->scratch, PUSH_CHUNK_FRAMES);
+        if (got == 0) {
+            p->eof = true;
+            break;
+        }
+        if (!audio_push(&p->audio, p->scratch, got)) {
             p->playing = false;
             return;
         }
-        p->cursor     += chunk;
-        p->frames_put += chunk;
+        p->frames_put += got;
     }
 
-    if (p->cursor >= p->track.frames && audio_queued_frames(&p->audio) == 0) {
+    if (p->eof && audio_queued_frames(&p->audio) == 0) {
         if (p->loop_track) {
             player_seek_seconds(p, 0.0);
         } else if (p->current + 1 < p->count) {
@@ -149,27 +178,31 @@ void player_prev(Player *p) {
 }
 
 static uint64_t clamp_frame(const Player *p, uint64_t f) {
-    return f > p->track.frames ? p->track.frames : f;
+    if (p->info.frames != 0 && f > p->info.frames)
+        return p->info.frames;
+    return f;
 }
 
 void player_seek_seconds(Player *p, double seconds) {
-    if (!p->track.samples)
+    if (!p->dec)
         return;
     if (seconds < 0.0)
         seconds = 0.0;
 
     // round to the nearest frame so seeking to the exact duration lands on
     // the end even when the floating-point conversion is a hair short
-    double frame_pos = seconds * (double)p->track.sample_rate;
-    uint64_t f = frame_pos >= (double)p->track.frames
-                     ? p->track.frames
+    double frame_pos = seconds * (double)p->info.sample_rate;
+    uint64_t f = frame_pos >= (double)p->info.frames && p->info.frames != 0
+                     ? p->info.frames
                      : (uint64_t)(frame_pos + 0.5);
     f = clamp_frame(p, f);
 
     audio_clear(&p->audio);
-    p->cursor     = f;
+    if (!decoder_seek(p->dec, f))
+        SDL_Log("player: seek failed for %s", player_current_name(p));
     p->base_frame = f;
     p->frames_put = 0;
+    p->eof        = false;
 }
 
 void player_seek_relative(Player *p, double delta) {
@@ -188,18 +221,18 @@ void player_adjust_volume(Player *p, float delta) {
 }
 
 double player_position(const Player *p) {
-    if (!p->track.samples || p->track.sample_rate == 0)
+    if (!p->dec || p->info.sample_rate == 0)
         return 0.0;
     uint64_t queued = audio_queued_frames(&p->audio);
     uint64_t played = p->frames_put > queued ? p->frames_put - queued : 0;
     uint64_t pos    = clamp_frame(p, p->base_frame + played);
-    return (double)pos / (double)p->track.sample_rate;
+    return (double)pos / (double)p->info.sample_rate;
 }
 
 double player_duration(const Player *p) {
-    if (p->track.sample_rate == 0)
+    if (p->info.sample_rate == 0)
         return 0.0;
-    return (double)p->track.frames / (double)p->track.sample_rate;
+    return (double)p->info.frames / (double)p->info.sample_rate;
 }
 
 const char *player_current_name(const Player *p) {

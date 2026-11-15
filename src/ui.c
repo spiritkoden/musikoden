@@ -221,15 +221,27 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     const float gut_gap  = 10.0f * ui->scale;
     const float row_gap  = LIST_ROW_GAP * ui->scale;
 
-    // widest row, so the panel hugs the list instead of the window
-    float content_w = 0.0f;
-    for (int i = 0; i < count; ++i) {
-        char row[LIST_NAME_MAX];
-        SDL_snprintf(row, sizeof row, "%d. %s", i + 1, path_basename(paths[i]));
-        int tw = 0, th = 0;
-        if (ui_measure(ui, row, &tw, &th) && (float)tw > content_w)
-            content_w = (float)tw;
+    // widest row, so the panel hugs the list instead of the window.
+    // Measuring every row each frame is expensive on big playlists, so cache
+    // the result and only recompute when the list or the scale changes.
+    const char *first = count > 0 && paths ? paths[0] : NULL;
+    if (ui->list_paths != paths || ui->list_first != first ||
+        ui->list_count != count || ui->list_scale != ui->scale) {
+        float cw = 0.0f;
+        for (int i = 0; i < count; ++i) {
+            char row[LIST_NAME_MAX];
+            SDL_snprintf(row, sizeof row, "%d. %s", i + 1, path_basename(paths[i]));
+            int tw = 0, th = 0;
+            if (ui_measure(ui, row, &tw, &th) && (float)tw > cw)
+                cw = (float)tw;
+        }
+        ui->list_paths  = paths;
+        ui->list_first  = (char *)first;
+        ui->list_count  = count;
+        ui->list_scale  = ui->scale;
+        ui->list_max_w  = (int)cw;
     }
+    float content_w = (float)ui->list_max_w;
 
     float panel_w = pad + (float)gut_w + gut_gap + content_w + pad;
     if (panel_w < LIST_MIN_W * ui->scale)

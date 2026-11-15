@@ -9,6 +9,7 @@
 #define PLAYER_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "audio.h"
 #include "decoder.h"
@@ -19,16 +20,21 @@ typedef struct {
     int    current; // index of loaded track, or -1
 
     // bumped on every player_open() attempt; lets the UI tell two loads apart
-    // even when the allocator reuses the previous sample buffer's address
+    // even when the allocator reuses the previous buffer's address
     uint64_t load_id;
 
-    DecodedAudio track;
-    AudioOut     audio;
+    Decoder  *dec;   // streaming decoder for the current track (NULL if none)
+    AudioInfo info;  // rate/channels/duration of the current track
+    AudioOut  audio;
+
+    // scratch decode buffer, sized for PUSH_CHUNK_FRAMES * channels floats
+    float    *scratch;
+    uint32_t  scratch_frames;
 
     uint64_t base_frame;
     uint64_t frames_put;
-    uint64_t cursor;
 
+    bool  eof;
     bool  playing;
     bool  loop_track;
     float volume;

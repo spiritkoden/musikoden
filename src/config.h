@@ -8,7 +8,6 @@
 
 typedef struct {
     char path[CONFIG_PATH_MAX];
-    char font[CONFIG_VALUE_MAX];
     char log[CONFIG_VALUE_MAX];
     int  bg;
     int  width;

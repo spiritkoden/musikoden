@@ -5,8 +5,8 @@ PREFIX        ?= /usr/local
 BASE_CFLAGS   ?= -std=c11 -O2 -g
 DEPFLAGS      := -MMD -MP
 WARN_CFLAGS   := -Wall -Wextra -Wshadow -Wconversion
-PKG_CFLAGS    := $(shell pkg-config --cflags sdl3 sdl3-ttf faad2)
-PKG_LIBS      := $(shell pkg-config --libs sdl3 sdl3-ttf faad2)
+PKG_CFLAGS    := $(shell pkg-config --cflags sdl3 sdl3-ttf faad2 fontconfig)
+PKG_LIBS      := $(shell pkg-config --libs sdl3 sdl3-ttf faad2 fontconfig)
 INC           := -Isrc -Ithird_party
 
 CFLAGS        := $(BASE_CFLAGS) $(WARN_CFLAGS) $(DEPFLAGS) $(PKG_CFLAGS) $(INC)
@@ -39,7 +39,7 @@ run: $(BIN)
 	./$(BIN)
 
 deps:
-	sudo pacman -S --needed sdl3 sdl3-ttf faad2
+	sudo pacman -S --needed sdl3 sdl3-ttf faad2 fontconfig
 
 # Terminal app: install the binary only — no desktop entry, no icon.
 install: $(BIN)

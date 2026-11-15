@@ -26,14 +26,13 @@
 
 static const char FILE_HEADER[] =
     "# musikoden configuration — 'key = value'; a line starting with '#' is a comment.\n"
-    "# font:       path to a .ttf file; empty = probe system fonts (--font).\n"
+    "# The system font is used automatically; --font overrides it.\n"
     "# bg:         canvas background as a hex color, e.g. #101016.\n"
     "# resolution: initial window size as WIDTHxHEIGHT, e.g. 800x480.\n"
     "# The log is always musikoden.log in this directory; use --log FILE to\n"
     "# point it elsewhere.\n"
     "\n";
 static const char FILE_DEFAULTS[] =
-    "font =\n"
     "bg = #101016\n";
 
 static bool is_space(char c) {
@@ -123,7 +122,8 @@ static void parse_file(Config *cfg, FILE *f) {
         trim(value);
 
         if (strcmp(key, "font") == 0) {
-            copy_value(cfg->font, sizeof cfg->font, value, key);
+            // legacy key, accepted silently: the system font is used now and
+            // an unknown key would warn on every start
         } else if (strcmp(key, "log") == 0) {
             // legacy key, accepted silently (the log always lives beside
             // this file now); an unknown key would warn on every start
@@ -243,6 +243,16 @@ bool config_save_resolution(const Config *cfg, int width, int height) {
             SDL_Log("config: cannot read '%s': %s", cfg->path, strerror(errno));
             fclose(f);
             return false;
+        }
+        // detect a file larger than our buffer instead of silently truncating
+        // it and then clobbering the user's content on save
+        if (src_len == sizeof source - 1) {
+            int extra = fgetc(f);
+            if (extra != EOF) {
+                SDL_Log("config: '%s' too large to update; not saving", cfg->path);
+                fclose(f);
+                return false;
+            }
         }
         fclose(f);
         source[src_len] = '\0';

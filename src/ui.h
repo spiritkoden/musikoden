@@ -11,6 +11,15 @@ typedef struct {
     TTF_TextEngine  *engine;
     float            scale; // UI pixels per point (window content scale)
     bool             ready;
+
+    // playlist-overlay cache: the widest-row measurement is expensive (one
+    // font shape per row), so it's recomputed only when the list or the scale
+    // changes.
+    char **list_paths;
+    char  *list_first; // first item pointer, to catch a freed/reused list
+    int    list_count;
+    float  list_scale;
+    int    list_max_w;
 } UI;
 
 bool ui_init(UI *ui, SDL_Renderer *r, const char *font_path, float ptsize,

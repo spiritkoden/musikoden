@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 #include <SDL3_ttf/SDL_ttf.h>
+#include <fontconfig/fontconfig.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +24,6 @@
 #define VOLUME_STEP       0.05f
 #define STATUS_MS         2500
 #define LIST_PAGE         10
-#define OVERVIEW_RESIZE_MS 150
 
 // ui_scale is set in main() from the window's content scale
 #define UI_PX(v) ((float)(v) * ui_scale)
@@ -41,13 +41,31 @@
 #define TEXT_ROW3_Y   (TEXT_ROW2_Y + TEXT_ROW_H)
 #define TEXT_BLOCK_H  (TEXT_ROW_H + UI_PX(24.0f))
 
-static const char *DEFAULT_FONTS[] = {
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/LiberationSans-Regular.ttf",
-    NULL,
-};
+// Ask fontconfig for the desktop's preferred monospace font. The returned
+// path is written to out so the caller owns the storage.
+static bool system_font(char *out, size_t size) {
+    if (!FcInit())
+        return false;
+
+    bool ok = false;
+    FcPattern *pat = FcNameParse((const FcChar8 *)"monospace");
+    if (pat) {
+        FcConfigSubstitute(NULL, pat, FcMatchPattern);
+        FcDefaultSubstitute(pat);
+
+        FcResult result;
+        FcPattern *match = FcFontMatch(NULL, pat, &result);
+        if (match) {
+            FcChar8 *file = NULL;
+            if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch &&
+                file && SDL_snprintf(out, size, "%s", (const char *)file) > 0)
+                ok = true;
+            FcPatternDestroy(match);
+        }
+        FcPatternDestroy(pat);
+    }
+    return ok;
+}
 
 static const SDL_Color COL_FG    = { 224, 232, 240, 255 };
 static const SDL_Color COL_DIM   = { 128, 142, 158, 255 };
@@ -151,14 +169,10 @@ int main(int argc, char *argv[]) {
     if (!config_load(&cfg))
         SDL_Log("config: persistence disabled (no usable config path)");
 
-    const char *font_path = font_arg ? font_arg
-                                     : (cfg.font[0] ? cfg.font : NULL);
-    if (!font_path) {
-        for (int i = 0; DEFAULT_FONTS[i]; ++i) {
-            FILE *f = fopen(DEFAULT_FONTS[i], "r");
-            if (f) { fclose(f); font_path = DEFAULT_FONTS[i]; break; }
-        }
-    }
+    char sys_font[CONFIG_PATH_MAX];
+    const char *font_path = font_arg;
+    if (!font_path && system_font(sys_font, sizeof sys_font))
+        font_path = sys_font;
     const char *log_path = log_arg ? log_arg
                                    : (cfg.log[0] ? cfg.log : "musikoden.log");
 
@@ -168,9 +182,8 @@ int main(int argc, char *argv[]) {
     SDL_Log("musikoden starting: log='%s' font='%s'", log_path,
             font_path ? font_path : "(none)");
     if (cfg.path[0])
-        SDL_Log("config: '%s' (font='%s' log='%s' bg=#%06x resolution=%dx%d)",
-                cfg.path, cfg.font[0] ? cfg.font : "(auto)",
-                cfg.log[0] ? cfg.log : "musikoden.log",
+        SDL_Log("config: '%s' (log='%s' bg=#%06x resolution=%dx%d)",
+                cfg.path, cfg.log[0] ? cfg.log : "musikoden.log",
                 (unsigned)cfg.bg, cfg.width, cfg.height);
 
     Playlist playlist;
@@ -224,8 +237,10 @@ int main(int argc, char *argv[]) {
     if (!(ui_scale > 0.0f))
         ui_scale = 1.0f;
 
-    UI ui;
-    if (!ui_init(&ui, renderer, font_path, 18.0f * ui_scale, ui_scale))
+    UI ui = { 0 };
+    if (!font_path)
+        SDL_Log("warning: no system font found; running without text overlay");
+    else if (!ui_init(&ui, renderer, font_path, 18.0f * ui_scale, ui_scale))
         SDL_Log("running without text overlay");
 
     Player player;
@@ -249,10 +264,8 @@ int main(int argc, char *argv[]) {
 
     float *scope_buf = (float *)malloc((size_t)SCOPE_SAMPLES * sizeof(float));
     WaveOverview overview = { 0 };
+    WaveScan *scan = NULL;
     uint64_t ov_built_load = 0;
-    int ov_built_columns = -1;
-    int ov_pending_columns = -1;
-    Uint64 ov_pending_since = 0;
 
     bool running = true;
     bool scrubbing = false;
@@ -501,26 +514,22 @@ int main(int argc, char *argv[]) {
 
         player_tick(&player);
 
-        int columns = (int)overview_rect.w;
+        // start (or restart) the waveform scan when the track changes
         if (player.load_id != ov_built_load) {
-            // a new track always rebuilds immediately
-            overview_build(&overview, &player.track, columns);
-            ov_built_columns = columns;
+            wavescan_free(scan);
+            scan = wavescan_start(player.current >= 0
+                                      ? player.paths[player.current]
+                                      : NULL,
+                                  player.info.frames, player.info.channels);
             ov_built_load = player.load_id;
-        } else if (columns != ov_built_columns) {
-            // debounce resizes: rebuilding the whole waveform every frame is
-            // expensive on long tracks, so wait until the width settles
-            if (columns != ov_pending_columns) {
-                ov_pending_columns = columns;
-                ov_pending_since = now;
-            } else if (now - ov_pending_since >= OVERVIEW_RESIZE_MS) {
-                overview_build(&overview, &player.track, columns);
-                ov_built_columns = columns;
-            }
-        } else {
-            // keep the pending width in sync once the size is back to normal
-            ov_pending_columns = columns;
         }
+
+        // cheap downsample from the scan bins: safe to run every frame, so a
+        // resize (or progressive scan) is reflected immediately
+        int columns = (int)overview_rect.w;
+        if (columns < 1)
+            columns = 1;
+        (void)wavescan_build(scan, &overview, columns);
 
         SDL_SetRenderDrawColor(renderer,
                                (Uint8)((cfg.bg >> 16) & 0xFF),
@@ -642,6 +651,7 @@ int main(int argc, char *argv[]) {
 
     SDL_Log("musikoden shutting down");
     free(scope_buf);
+    wavescan_free(scan);
     overview_free(&overview);
     ui_destroy(&ui);
     player_destroy(&player);

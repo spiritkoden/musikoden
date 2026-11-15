@@ -2,53 +2,208 @@
 
 #include <stdlib.h>
 
+#include <SDL3/SDL_atomic.h>
+#include <SDL3/SDL_mutex.h>
+#include <SDL3/SDL_thread.h>
+
+#include "decoder.h"
+
+#define WAVE_BINS 4096
+
+struct WaveScan {
+    SDL_Thread   *thread;
+    SDL_Mutex    *lock;
+    SDL_AtomicInt cancel;
+    char         *path;
+    uint64_t      frames;
+    uint32_t      channels;
+    int           bins;
+    float        *minv;
+    float        *maxv;
+    uint64_t      scanned_frames;
+    bool          done;
+};
+
+// --- background scan -------------------------------------------------------
+
+static int SDLCALL scan_thread(void *data) {
+    WaveScan *s = (WaveScan *)data;
+
+    AudioInfo info;
+    Decoder *dec = decoder_open(s->path, &info);
+    if (!dec) {
+        SDL_LockMutex(s->lock);
+        s->done = true;
+        SDL_UnlockMutex(s->lock);
+        return 0;
+    }
+
+    uint32_t ch = s->channels ? s->channels
+                              : (info.channels ? info.channels : 1u);
+
+    const uint32_t chunk = 4096u;
+    float *buf = (float *)malloc((size_t)chunk * ch * sizeof(float));
+    if (!buf) {
+        decoder_close(dec);
+        SDL_LockMutex(s->lock);
+        s->done = true;
+        SDL_UnlockMutex(s->lock);
+        return 0;
+    }
+
+    const double total = (s->frames != 0) ? (double)s->frames : 1.0;
+    const double scale = (double)s->bins / total;
+    uint64_t pos = 0;
+
+    while (!SDL_GetAtomicInt(&s->cancel)) {
+        uint32_t got = decoder_read(dec, buf, chunk);
+        if (got == 0)
+            break;
+
+        SDL_LockMutex(s->lock);
+        for (uint32_t f = 0; f < got; ++f) {
+            uint64_t g = pos + f;
+            int b = (int)((double)g * scale);
+            if (b < 0) b = 0;
+            if (b >= s->bins) b = s->bins - 1;
+            float m = 0.0f;
+            for (uint32_t c = 0; c < ch; ++c)
+                m += buf[(size_t)f * ch + c];
+            m /= (float)ch;
+            if (m < s->minv[b]) s->minv[b] = m;
+            if (m > s->maxv[b]) s->maxv[b] = m;
+        }
+        pos += got;
+        s->scanned_frames = pos;
+        SDL_UnlockMutex(s->lock);
+    }
+
+    free(buf);
+    decoder_close(dec);
+
+    SDL_LockMutex(s->lock);
+    s->done = true;
+    SDL_UnlockMutex(s->lock);
+    return 0;
+}
+
+WaveScan *wavescan_start(const char *path, uint64_t frames, uint32_t channels) {
+    if (!path || !path[0])
+        return NULL;
+
+    WaveScan *s = (WaveScan *)calloc(1, sizeof *s);
+    if (!s)
+        return NULL;
+    s->path     = SDL_strdup(path);
+    s->frames   = frames;
+    s->channels = channels;
+    s->bins     = WAVE_BINS;
+    s->minv     = (float *)malloc((size_t)WAVE_BINS * sizeof(float));
+    s->maxv     = (float *)malloc((size_t)WAVE_BINS * sizeof(float));
+    if (!s->path || !s->minv || !s->maxv) {
+        SDL_free(s->path);
+        free(s->minv);
+        free(s->maxv);
+        free(s);
+        return NULL;
+    }
+
+    s->lock = SDL_CreateMutex();
+    if (!s->lock) {
+        SDL_free(s->path);
+        free(s->minv);
+        free(s->maxv);
+        free(s);
+        return NULL;
+    }
+
+    SDL_SetAtomicInt(&s->cancel, 0);
+    s->thread = SDL_CreateThread(scan_thread, "musikoden-scan", s);
+    if (!s->thread) {
+        SDL_DestroyMutex(s->lock);
+        SDL_free(s->path);
+        free(s->minv);
+        free(s->maxv);
+        free(s);
+        return NULL;
+    }
+    return s;
+}
+
+void wavescan_free(WaveScan *s) {
+    if (!s)
+        return;
+    SDL_SetAtomicInt(&s->cancel, 1);
+    if (s->thread)
+        SDL_WaitThread(s->thread, NULL);
+    SDL_DestroyMutex(s->lock);
+    SDL_free(s->path);
+    free(s->minv);
+    free(s->maxv);
+    free(s);
+}
+
+// --- overview --------------------------------------------------------------
+
 void overview_free(WaveOverview *o) {
-    if (!o) return;
+    if (!o)
+        return;
     free(o->minv);
     free(o->maxv);
     o->minv = o->maxv = NULL;
     o->columns = 0;
 }
 
-void overview_build(WaveOverview *o, const DecodedAudio *audio, int columns) {
-    overview_free(o);
+double wavescan_build(WaveScan *s, WaveOverview *o, int columns) {
     if (columns < 1)
         columns = 1;
-    o->columns = columns;
-    o->minv = (float *)malloc((size_t)columns * sizeof(float));
-    o->maxv = (float *)malloc((size_t)columns * sizeof(float));
-    if (!o->minv || !o->maxv) {
+
+    if (o->columns != columns) {
         overview_free(o);
-        return;
+        o->minv = (float *)malloc((size_t)columns * sizeof(float));
+        o->maxv = (float *)malloc((size_t)columns * sizeof(float));
+        if (!o->minv || !o->maxv) {
+            overview_free(o);
+            return 0.0;
+        }
+        o->columns = columns;
     }
 
-    if (!audio->samples || audio->frames == 0) {
+    if (!s) {
         for (int i = 0; i < columns; ++i)
             o->minv[i] = o->maxv[i] = 0.0f;
-        return;
+        return 0.0;
     }
 
-    const uint32_t ch = audio->channels;
-    const uint64_t frames = audio->frames;
-
+    SDL_LockMutex(s->lock);
+    const int bins = s->bins;
+    const float *mn = s->minv;
+    const float *mx = s->maxv;
     for (int i = 0; i < columns; ++i) {
-        uint64_t s = (uint64_t)((double)i * (double)frames / (double)columns);
-        uint64_t e = (uint64_t)((double)(i + 1) * (double)frames / (double)columns);
-        if (e <= s) e = s + 1;
-        if (e > frames) e = frames;
+        double a = (double)i * (double)bins / (double)columns;
+        double b = (double)(i + 1) * (double)bins / (double)columns;
+        int b0 = (int)a;
+        int b1 = (int)(b + 0.9999999999);
+        if (b1 <= b0) b1 = b0 + 1;
+        if (b1 > bins) b1 = bins;
+        if (b0 >= bins) b0 = bins - 1;
 
-        float mn = 0.0f, mx = 0.0f;
-        for (uint64_t f = s; f < e; ++f) {
-            float m = 0.0f;
-            for (uint32_t c = 0; c < ch; ++c)
-                m += audio->samples[(size_t)f * ch + c];
-            m /= (float)ch;
-            if (m < mn) mn = m;
-            if (m > mx) mx = m;
+        float mnc = 0.0f, mxc = 0.0f;
+        for (int k = b0; k < b1; ++k) {
+            if (mn[k] < mnc) mnc = mn[k];
+            if (mx[k] > mxc) mxc = mx[k];
         }
-        o->minv[i] = mn;
-        o->maxv[i] = mx;
+        o->minv[i] = mnc;
+        o->maxv[i] = mxc;
     }
+
+    double progress = 1.0;
+    if (!s->done && s->frames != 0)
+        progress = (double)s->scanned_frames / (double)s->frames;
+    if (progress < 0.0) progress = 0.0;
+    if (progress > 1.0) progress = 1.0;
+    SDL_UnlockMutex(s->lock);
+    return progress;
 }
 
 void overview_draw(SDL_Renderer *r, const WaveOverview *o, const SDL_FRect *rect,
