@@ -6,7 +6,7 @@ Plays MP3, FLAC, WAV, OGG/OGA and M4A/AAC.
 ## Build
 
 Requires a C11 compiler, `make`, `pkg-config`, SDL3 (3.2 or newer),
-SDL3_ttf and FAAD2.
+SDL3_ttf, FAAD2 and fontconfig.
 
 ```sh
 make deps          # Arch Linux
@@ -26,9 +26,9 @@ musikoden [--font FILE] [--log FILE] <file|dir> [more...]
 `~/.config/musikoden/musikoden.conf` (or `$XDG_CONFIG_HOME/musikoden/musikoden.conf`):
 
 ```ini
-font =
 bg = #101016
 resolution = 800x480
 ```
 
-`--font` and `--log` override the config.
+The system monospace font is used automatically. `--font` overrides it, and
+`--log` overrides the default log location.
