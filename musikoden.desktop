@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=musikoden
+GenericName=Music Player
+Comment=A minimal, keyboard-driven music player with a waveform visualizer
+Exec=musikoden %F
+Icon=musikoden
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;player;mp3;flac;ogg;wav;m4a;
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/mp4;

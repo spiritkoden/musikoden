@@ -41,15 +41,32 @@ run: $(BIN)
 deps:
 	sudo pacman -S --needed sdl3 sdl3-ttf faad2 fontconfig
 
-# Terminal app: install the binary only — no desktop entry, no icon.
-install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+# Install the binary, the icon and the desktop entry. Progress lines show the
+# path relative to the prefix (short and readable); the real destinations are
+# still $(DESTDIR)$(PREFIX)-prefixed so packaging with DESTDIR keeps working.
+BIN_REL  := bin/$(BIN)
+ICON_REL := share/icons/hicolor/300x300/apps/$(BIN).png
+APP_REL  := share/applications/$(BIN).desktop
 
-# The two extra rm lines clean up entries left by older installs.
+install: $(BIN)
+	@echo "==> Installing musikoden to $(DESTDIR)$(PREFIX)"
+	@install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/$(BIN_REL)
+	@echo "    ✓ $(BIN_REL)"
+	@install -Dm644 img/logo.png $(DESTDIR)$(PREFIX)/$(ICON_REL)
+	@echo "    ✓ $(ICON_REL)"
+	@install -Dm644 musikoden.desktop $(DESTDIR)$(PREFIX)/$(APP_REL)
+	@echo "    ✓ $(APP_REL)"
+	@echo "==> Done"
+
 uninstall:
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
-	rm -f $(DESTDIR)$(PREFIX)/share/applications/musikoden.desktop
-	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/300x300/apps/musikoden.png
+	@echo "==> Uninstalling musikoden from $(DESTDIR)$(PREFIX)"
+	@rm -f $(DESTDIR)$(PREFIX)/$(BIN_REL)
+	@echo "    ✗ $(BIN_REL)"
+	@rm -f $(DESTDIR)$(PREFIX)/$(ICON_REL)
+	@echo "    ✗ $(ICON_REL)"
+	@rm -f $(DESTDIR)$(PREFIX)/$(APP_REL)
+	@echo "    ✗ $(APP_REL)"
+	@echo "==> Done"
 
 clean:
 	rm -f $(OBJ) $(DEP) $(BIN)
