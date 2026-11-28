@@ -274,12 +274,14 @@ int main(int argc, char *argv[]) {
     char status_msg[64] = { 0 };
     Uint64 status_until = 0;
     UI_Scroll name_scroll = { 0 };
-    int name_for = -2;
+    uint64_t name_for_load = 0;
     int list_sel = 0;
     int list_first = 0;
     UI_Scroll list_scroll = { 0 };
     int list_sel_for = -2;
     const char *list_name_for = NULL;
+    int help_first = 0;
+    int help_rows = 0;
     Uint64 last_ticks = SDL_GetTicks();
 
     while (running) {
@@ -290,12 +292,33 @@ int main(int argc, char *argv[]) {
 
         int w = 0, h = 0;
         SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
+
+        int line_h = (int)TEXT_ROW_H;
+        int ref_w = 0, ref_h = 0;
+        if (ui_measure(&ui, "Ag", &ref_w, &ref_h) && ref_h > 0)
+            line_h = ref_h;
+
         SDL_FRect overview_rect = {
             MARGIN, (float)h - MARGIN - OVERVIEW_H,
             (float)w - 2.0f * MARGIN, OVERVIEW_H
         };
         if (overview_rect.w < 1.0f) overview_rect.w = 1.0f;
         if (overview_rect.y < 0.0f) overview_rect.y = 0.0f;
+
+        // On very short windows there is no room above the overview for the
+        // time text. Push the overview down and shrink it instead of letting
+        // the text overlap the waveform.
+        float time_y = overview_rect.y - (float)line_h - ELEMENT_GAP;
+        if (time_y < TEXT_ROW3_Y) {
+            time_y = TEXT_ROW3_Y;
+            float y = time_y + ELEMENT_GAP + (float)line_h;
+            float max_y = (float)h - MARGIN - 1.0f;
+            if (y > max_y) y = max_y;
+            if (y < 0.0f) y = 0.0f;
+            overview_rect.y = y;
+            overview_rect.h = (float)h - MARGIN - y;
+            if (overview_rect.h < 1.0f) overview_rect.h = 1.0f;
+        }
 
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -390,8 +413,23 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (overlay == OVL_HELP) {
-                    if (ev.key.key == SDLK_H || ev.key.key == SDLK_ESCAPE)
-                        overlay = OVL_NONE;
+                    const int help_count =
+                        (int)(sizeof HELP_HINTS / sizeof HELP_HINTS[0]);
+                    switch (ev.key.key) {
+                    case SDLK_H:
+                    case SDLK_ESCAPE: overlay = OVL_NONE; break;
+                    case SDLK_UP:       help_first--; break;
+                    case SDLK_DOWN:     help_first++; break;
+                    case SDLK_PAGEUP:   help_first -= 5; break;
+                    case SDLK_PAGEDOWN: help_first += 5; break;
+                    case SDLK_HOME:     help_first = 0; break;
+                    case SDLK_END:      help_first = help_count - 1; break;
+                    default: break;
+                    }
+                    int max_first = help_count - help_rows;
+                    if (max_first < 0) max_first = 0;
+                    if (help_first < 0) help_first = 0;
+                    if (help_first > max_first) help_first = max_first;
                     break;
                 }
 
@@ -450,7 +488,10 @@ int main(int argc, char *argv[]) {
                     if (!SDL_MinimizeWindow(window))
                         SDL_Log("SDL_MinimizeWindow failed: %s", SDL_GetError());
                     break;
-                case SDLK_H:     overlay = OVL_HELP; break;
+                case SDLK_H:
+                    help_first = 0;
+                    overlay = OVL_HELP;
+                    break;
                 case SDLK_S:
                     list_sel   = player.current >= 0 ? player.current : 0;
                     list_first = 0;
@@ -542,17 +583,10 @@ int main(int argc, char *argv[]) {
         double progress = dur > 0.0 ? pos / dur : 0.0;
         overview_draw(renderer, &overview, &overview_rect, progress);
 
-        int line_h = (int)TEXT_ROW_H;
-        int ref_w = 0, ref_h = 0;
-        if (ui_measure(&ui, "Ag", &ref_w, &ref_h) && ref_h > 0)
-            line_h = ref_h;
-
-        float time_y = overview_rect.y - (float)line_h - ELEMENT_GAP;
-        if (time_y < TEXT_ROW3_Y)
-            time_y = TEXT_ROW3_Y;
-
-        if (player.current != name_for) {
-            name_for = player.current;
+        // load_id changes on every (re)open, even when a playlist replacement
+        // keeps the same index, so a stale marquee offset cannot leak over.
+        if (player.load_id != name_for_load) {
+            name_for_load = player.load_id;
             name_scroll = (UI_Scroll){ 0 };
         }
         SDL_FRect name_box = {
@@ -569,8 +603,10 @@ int main(int argc, char *argv[]) {
             (time_y - ELEMENT_GAP) - scope_top
         };
         if (scope_rect.h > 1.0f) {
-            audio_scope_read(&player.audio, scope_buf, SCOPE_SAMPLES);
-            scope_draw(renderer, scope_buf, SCOPE_SAMPLES, &scope_rect);
+            uint32_t scope_n = audio_scope_read(&player.audio, scope_buf,
+                                                SCOPE_SAMPLES);
+            if (scope_n > 1)
+                scope_draw(renderer, scope_buf, (int)scope_n, &scope_rect);
         }
 
         char pos_s[32], dur_s[32];
@@ -601,10 +637,14 @@ int main(int argc, char *argv[]) {
 
         switch (overlay) {
         case OVL_HELP:
-            ui_help_overlay(&ui, renderer, "Keyboard shortcuts",
-                            HELP_HINTS,
-                            (int)(sizeof HELP_HINTS / sizeof HELP_HINTS[0]),
-                            "H to close");
+            help_rows = ui_help_overlay(&ui, renderer, "Keyboard shortcuts",
+                                        HELP_HINTS,
+                                        (int)(sizeof HELP_HINTS
+                                              / sizeof HELP_HINTS[0]),
+                                        "Up/Down scroll, H to close",
+                                        &help_first);
+            if (help_rows < 1)
+                help_rows = 1;
             break;
         case OVL_LIST:
             if (list_sel > playlist.count - 1)

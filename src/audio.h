@@ -35,6 +35,9 @@ uint64_t audio_queued_frames(const AudioOut *a);
 
 bool audio_push(AudioOut *a, const float *frames, uint32_t n);
 
-void audio_scope_read(const AudioOut *a, float *dst, int n);
+// Copies the newest `n` valid scope samples (oldest first) into `dst` and
+// returns how many were actually written. Fewer than `n` means playback has
+// not produced that many frames yet, so callers should only draw the result.
+uint32_t audio_scope_read(const AudioOut *a, float *dst, uint32_t n);
 
 #endif // AUDIO_H

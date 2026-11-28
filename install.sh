@@ -18,7 +18,7 @@
 #   ~/.local/lib/musikoden/musikoden              real binary
 #   ~/.config/musikoden/                          user config + log (preserved)
 #   ~/.local/share/applications/musikoden.desktop
-#   ~/.local/share/icons/hicolor/256x256/apps/musikoden.png
+#   ~/.local/share/icons/hicolor/256x256/apps/musikoden.ico
 #
 # The launcher uses `exec` so /proc/self/exe still points at the real binary.
 #
@@ -35,10 +35,10 @@ APP_COMMENT="Minimal SDL3 music player with waveform visualizer"  # Comment= (""
 APP_CATEGORIES="AudioVideo;Audio;Player;"  # Categories= (semicolon separated)
 
 SRC_BIN_REL="musikoden"              # binary produced by the build, relative to script dir
-ICON_REL="assets/icon.png"           # icon source, relative to script dir ("" = no icon)
-ICON_EXT="png"                       # installed icon extension
+ICON_REL="assets/icon.ico"           # icon source, relative to script dir ("" = no icon)
+ICON_EXT="ico"                       # installed icon extension
 ICON_THEME_REL="icons/hicolor/256x256/apps"  # hicolor bucket, relative to share/
-LEGACY_ICON_RELS="icons/hicolor/300x300/apps/musikoden.png"  # "" = none
+LEGACY_ICON_RELS="icons/hicolor/256x256/apps/musikoden.png icons/hicolor/300x300/apps/musikoden.png"  # "" = none
 
 DATA_SUBDIR=".config/musikoden"      # user config under $HOME ("" = no data dir)
 OLD_DATA_SUBDIR=""                   # old location under lib/<APP>/ ("" = none)
@@ -314,7 +314,9 @@ EOF
         [ -z "$APP_GENERIC_NAME" ] || printf 'GenericName=%s\n' "$APP_GENERIC_NAME"
         [ -z "$APP_COMMENT" ] || printf 'Comment=%s\n' "$APP_COMMENT"
         printf 'Exec="%s"\n' "$WRAPPER"
-        [ -z "$ICON_REL" ] || printf 'Icon=%s\n' "$APP"
+        # Point at the installed file directly: ICO is not one of the
+        # extensions hicolor theme lookup searches by icon name.
+        [ -z "$ICON_REL" ] || printf 'Icon=%s\n' "$ICON_FILE"
         printf 'Terminal=false\n'
         printf 'Categories=%s\n' "$APP_CATEGORIES"
         printf 'StartupNotify=true\n'
@@ -333,7 +335,8 @@ EOF
             rmdir "$parent" 2>/dev/null || true
         done
 
-        # Refresh the hicolor cache so the desktop actually resolves Icon=$APP.
+        # Keep the hicolor cache in sync, even though the desktop entry uses
+        # the icon's absolute path.
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -f -t "$SHARE_DIR/icons/hicolor" >/dev/null 2>&1 || true
         fi

@@ -89,18 +89,17 @@ bool audio_push(AudioOut *a, const float *frames, uint32_t n) {
     return true;
 }
 
-void audio_scope_read(const AudioOut *a, float *dst, int n) {
-    if (n <= 0)
-        return;
-    if ((uint32_t)n > AUDIO_SCOPE_CAP)
-        n = (int)AUDIO_SCOPE_CAP;
+uint32_t audio_scope_read(const AudioOut *a, float *dst, uint32_t n) {
+    if (!dst || n == 0)
+        return 0;
+    if (n > AUDIO_SCOPE_CAP)
+        n = AUDIO_SCOPE_CAP;
 
     uint64_t total = a->scope_written;
-    for (int i = 0; i < n; ++i) {
-        int64_t idx = (int64_t)total - (int64_t)n + (int64_t)i;
-        if (idx < 0)
-            dst[i] = 0.0f;
-        else
-            dst[i] = a->scope[(uint64_t)idx % AUDIO_SCOPE_CAP];
+    uint32_t valid = total < n ? (uint32_t)total : n;
+    for (uint32_t i = 0; i < valid; ++i) {
+        uint64_t idx = total - (uint64_t)valid + (uint64_t)i;
+        dst[i] = a->scope[idx % AUDIO_SCOPE_CAP];
     }
+    return valid;
 }

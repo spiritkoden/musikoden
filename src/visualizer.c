@@ -51,8 +51,45 @@ static int SDLCALL scan_thread(void *data) {
         return 0;
     }
 
-    const double total = (s->frames != 0) ? (double)s->frames : 1.0;
-    const double scale = (double)s->bins / total;
+    uint64_t total = s->frames;
+    if (total == 0) {
+        // Some formats (e.g. VBR MP3 without a seek table) do not report a
+        // frame count. Count it in a cheap decode-only pass, then rewind so
+        // the peaks are spread over the whole track instead of piling up in
+        // the last bin.
+        while (!SDL_GetAtomicInt(&s->cancel)) {
+            uint32_t got = decoder_read(dec, buf, chunk);
+            if (got == 0)
+                break;
+            total += got;
+        }
+        if (SDL_GetAtomicInt(&s->cancel)) {
+            free(buf);
+            decoder_close(dec);
+            SDL_LockMutex(s->lock);
+            s->done = true;
+            SDL_UnlockMutex(s->lock);
+            return 0;
+        }
+        if (!decoder_seek(dec, 0)) {
+            // Seeking back is not supported by every decoder; reopen instead.
+            decoder_close(dec);
+            dec = decoder_open(s->path, &info);
+            if (!dec) {
+                free(buf);
+                SDL_LockMutex(s->lock);
+                s->done = true;
+                SDL_UnlockMutex(s->lock);
+                return 0;
+            }
+        }
+        SDL_LockMutex(s->lock);
+        s->frames = total; // also lets the progress indicator use the count
+        SDL_UnlockMutex(s->lock);
+    }
+
+    const double total_d = (double)(total ? total : 1u);
+    const double scale = (double)s->bins / total_d;
     uint64_t pos = 0;
 
     while (!SDL_GetAtomicInt(&s->cancel)) {
@@ -98,8 +135,10 @@ WaveScan *wavescan_start(const char *path, uint64_t frames, uint32_t channels) {
     s->frames   = frames;
     s->channels = channels;
     s->bins     = WAVE_BINS;
-    s->minv     = (float *)malloc((size_t)WAVE_BINS * sizeof(float));
-    s->maxv     = (float *)malloc((size_t)WAVE_BINS * sizeof(float));
+    // Zeroed: scan_thread() compares against these values, so uninitialized
+    // (or stale, on the next track) peaks would leak into the overview.
+    s->minv     = (float *)calloc(WAVE_BINS, sizeof(float));
+    s->maxv     = (float *)calloc(WAVE_BINS, sizeof(float));
     if (!s->path || !s->minv || !s->maxv) {
         SDL_free(s->path);
         free(s->minv);
@@ -208,7 +247,7 @@ double wavescan_build(WaveScan *s, WaveOverview *o, int columns) {
 
 void overview_draw(SDL_Renderer *r, const WaveOverview *o, const SDL_FRect *rect,
                    double progress) {
-    if (!o->minv || o->columns < 1 || rect->w <= 0.0f)
+    if (!o->minv || o->columns < 1 || rect->w <= 0.0f || rect->h <= 0.0f)
         return;
     if (progress < 0.0) progress = 0.0;
     if (progress > 1.0) progress = 1.0;
@@ -220,11 +259,13 @@ void overview_draw(SDL_Renderer *r, const WaveOverview *o, const SDL_FRect *rect
     // one symmetric line per column, its thickness following the peak
     // amplitude: thin where quiet, fat where loud
     for (int i = 0; i < o->columns; ++i) {
-        float mn = o->minv[i] < 0.0f ? -o->minv[i] : o->minv[i];
-        float mx = o->maxv[i] < 0.0f ? -o->maxv[i] : o->maxv[i];
-        float amp = mn > mx ? mn : mx;
+        // Peak-to-peak is correct even for waveforms with a DC offset; using
+        // max(abs(min), abs(max)) would hide half of an asymmetric signal.
+        float span = o->maxv[i] - o->minv[i];
+        if (span < 0.0f) span = 0.0f;
+        if (span > 2.0f) span = 2.0f;
 
-        float h = amp * 2.0f * half;
+        float h = span * half;
         if (h < 1.0f) h = 1.0f;
 
         SDL_FRect bar = {
@@ -243,8 +284,13 @@ void overview_draw(SDL_Renderer *r, const WaveOverview *o, const SDL_FRect *rect
     }
 
     float px = rect->x + (float)(progress * (double)rect->w);
+    float phw = rect->w < 2.0f ? rect->w : 2.0f;
+    float phx = px - phw * 0.5f;
+    if (phx < rect->x) phx = rect->x;
+    if (phx + phw > rect->x + rect->w) phx = rect->x + rect->w - phw;
+
     SDL_SetRenderDrawColor(r, 255, 255, 255, 230);
-    SDL_FRect ph = { px - 1.0f, rect->y, 2.0f, rect->h };
+    SDL_FRect ph = { phx, rect->y, phw, rect->h };
     SDL_RenderFillRect(r, &ph);
 }
 

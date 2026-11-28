@@ -103,16 +103,20 @@ static void panel_paint(SDL_Renderer *r, const SDL_FRect *panel,
     SDL_RenderRect(r, panel);
 }
 
-static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
-                          const char *title, const char *message,
-                          const UI_KeyHint *rows, int n,
-                          const char *footnote) {
+static int overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
+                         const char *title, const char *message,
+                         const UI_KeyHint *rows, int n,
+                         const char *footnote, int *first_visible) {
     if (!ui->ready || !r || !rows || n <= 0)
-        return;
+        return 0;
 
     int line_h = 0, ref_w = 0;
     if (!ui_measure(ui, "Ag", &ref_w, &line_h) || line_h <= 0)
-        return;
+        return 0;
+
+    int rw = 0, rh = 0;
+    if (!SDL_GetCurrentRenderOutputSize(r, &rw, &rh) || rh <= 0)
+        return 0;
 
     const float pad      = 24.0f * ui->scale;
     const float row_gap  = 8.0f * ui->scale;
@@ -131,23 +135,47 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
     float body_w = (float)key_col_w + key_gap + (float)desc_w_max;
 
     float panel_w = pad * 2.0f + body_w;
-    float panel_h = pad * 2.0f + (float)n * (float)line_h
-                  + (float)(n - 1) * row_gap;
 
     const char *sections[3] = { title, message, footnote };
+    float extra_h = 0.0f;
     for (int i = 0; i < 3; ++i) {
         if (!sections[i])
             continue;
-        panel_h += (float)line_h + sect_gap;
+        extra_h += (float)line_h + sect_gap;
         int sw = 0, sh = 0;
         if (ui_measure(ui, sections[i], &sw, &sh) &&
             (float)sw + 2.0f * pad > panel_w)
             panel_w = (float)sw + 2.0f * pad;
     }
+    if (panel_w > (float)rw)
+        panel_w = (float)rw;
+
+    // Fit as many rows as the window allows instead of drawing an oversized
+    // panel whose bottom rows land off-screen (common at 320px high).
+    float avail_rows = (float)rh - 2.0f * pad - extra_h;
+    if (avail_rows < (float)line_h)
+        avail_rows = (float)line_h;
+    int rows_visible = (int)((avail_rows + row_gap)
+                             / ((float)line_h + row_gap));
+    if (rows_visible < 1) rows_visible = 1;
+    if (rows_visible > n) rows_visible = n;
+
+    float panel_h = 2.0f * pad + extra_h
+                  + (float)rows_visible * (float)line_h
+                  + (float)(rows_visible - 1) * row_gap;
+    if (panel_h > (float)rh)
+        panel_h = (float)rh;
+
+    if (first_visible) {
+        int max_first = n - rows_visible;
+        if (*first_visible < 0) *first_visible = 0;
+        if (*first_visible > max_first) *first_visible = max_first;
+    }
+    int first = first_visible ? *first_visible : 0;
 
     SDL_FRect panel;
     if (!panel_center(r, panel_w, panel_h, &panel))
-        return;
+        return 0;
     float cx = panel.x + panel.w * 0.5f;
 
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
@@ -165,7 +193,7 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
 
     float key_x  = panel.x + pad;
     float desc_x = key_x + (float)key_col_w + key_gap;
-    for (int i = 0; i < n; ++i) {
+    for (int i = first; i < first + rows_visible; ++i) {
         ui_text(ui, rows[i].key, key_x, y, accent);
         ui_text(ui, rows[i].desc, desc_x, y, HELP_FG);
         y += (float)line_h + row_gap;
@@ -177,18 +205,21 @@ static void overlay_panel(UI *ui, SDL_Renderer *r, SDL_Color accent,
     }
 
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    return rows_visible;
 }
 
-void ui_help_overlay(UI *ui, SDL_Renderer *r, const char *title,
-                     const UI_KeyHint *hints, int n,
-                     const char *footnote) {
-    overlay_panel(ui, r, HELP_ACCENT, title, NULL, hints, n, footnote);
+int ui_help_overlay(UI *ui, SDL_Renderer *r, const char *title,
+                    const UI_KeyHint *hints, int n,
+                    const char *footnote, int *first_visible) {
+    return overlay_panel(ui, r, HELP_ACCENT, title, NULL, hints, n,
+                         footnote, first_visible);
 }
 
 void ui_confirm_overlay(UI *ui, SDL_Renderer *r, const char *title,
                         const char *message, const UI_KeyHint *answers, int n,
                         const char *footnote) {
-    overlay_panel(ui, r, HELP_WARN, title, message, answers, n, footnote);
+    (void)overlay_panel(ui, r, HELP_WARN, title, message, answers, n,
+                        footnote, NULL);
 }
 
 #define LIST_ROW_GAP    2.0f
@@ -306,21 +337,30 @@ void ui_playlist_overlay(UI *ui, SDL_Renderer *r,
     // selection bar first, full panel width, drawn before the text clip
     float bar_y = rows_top + ((float)selected - (float)*first_visible)
                             * ((float)line_h + row_gap);
-    if (count > 0 && selected >= *first_visible
-        && bar_y + (float)line_h <= rows_bot) {
-        SDL_FRect bar = { panel.x + 1.0f, bar_y,
-                          panel.w - 2.0f, (float)line_h + row_gap };
-        SDL_SetRenderDrawColor(r, HELP_ACCENT.r, HELP_ACCENT.g,
-                               HELP_ACCENT.b, 40);
-        SDL_RenderFillRect(r, &bar);
+    if (count > 0 && selected >= *first_visible && bar_y < rows_bot) {
+        float bar_h = (float)line_h + row_gap;
+        if (bar_y + bar_h > rows_bot)
+            bar_h = rows_bot - bar_y; // never paint over the footer
+        if (bar_h > 0.0f) {
+            SDL_FRect bar = { panel.x + 1.0f, bar_y,
+                              panel.w - 2.0f, bar_h };
+            SDL_SetRenderDrawColor(r, HELP_ACCENT.r, HELP_ACCENT.g,
+                                   HELP_ACCENT.b, 40);
+            SDL_RenderFillRect(r, &bar);
+        }
     }
 
+    // Include the gutter so the ">" current-track marker is visible, and stop
+    // at the right padding instead of drawing over the panel border.
+    float clip_left  = panel.x + pad;
+    float clip_right = panel.x + panel.w - pad;
     SDL_Rect clip = {
-        (int)SDL_roundf(text_x - gut_gap),
+        (int)SDL_roundf(clip_left),
         (int)SDL_roundf(rows_top),
-        (int)SDL_roundf(panel.w - pad - (float)gut_w - gut_gap),
+        (int)SDL_roundf(clip_right - clip_left),
         (int)SDL_roundf(body_h)
     };
+    if (clip.w < 1) clip.w = 1;
     SDL_SetRenderClipRect(r, &clip);
 
     if (count == 0) {
@@ -393,10 +433,12 @@ void ui_text_marquee(UI *ui, SDL_Renderer *r, const char *text,
         (int)SDL_roundf(box->x), (int)SDL_roundf(box->y),
         (int)SDL_roundf(box->w), (int)SDL_roundf(box->h)
     };
+    SDL_Rect prev_clip;
+    bool had_clip = SDL_GetRenderClipRect(r, &prev_clip);
     SDL_SetRenderClipRect(r, &clip);
     ui_text(ui, text, box->x - scroll->offset, ty, fg);
     ui_text(ui, text, box->x - scroll->offset + scroll->travel, ty, fg);
-    SDL_SetRenderClipRect(r, NULL);
+    SDL_SetRenderClipRect(r, had_clip ? &prev_clip : NULL);
 }
 
 void ui_text_box(UI *ui, SDL_Renderer *r, const char *text,

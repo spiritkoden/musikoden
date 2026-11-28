@@ -16,7 +16,7 @@
 #   ~/.local/lib/musikoden/musikoden              real binary
 #   ~/.config/musikoden/                          user config + log (kept)
 #   ~/.local/share/applications/musikoden.desktop
-#   ~/.local/share/icons/hicolor/256x256/apps/musikoden.png
+#   ~/.local/share/icons/hicolor/256x256/apps/musikoden.ico
 #
 set -euo pipefail
 
@@ -25,9 +25,9 @@ set -euo pipefail
 # ===========================================================================
 
 APP="musikoden"                      # id: binary name, .desktop file, icon name
-ICON_EXT="png"                       # installed icon extension
+ICON_EXT="ico"                       # installed icon extension
 ICON_THEME_REL="icons/hicolor/256x256/apps"  # hicolor bucket, relative to share/
-LEGACY_ICON_RELS="icons/hicolor/300x300/apps/musikoden.png"  # "" = none
+LEGACY_ICON_RELS="icons/hicolor/256x256/apps/musikoden.png icons/hicolor/300x300/apps/musikoden.png"  # "" = none
 
 DATA_SUBDIR=".config/musikoden"      # user config under $HOME ("" = no data dir)
 OLD_DATA_SUBDIR=""                   # old location under lib/<APP>/ ("" = none)
@@ -198,7 +198,7 @@ remove_file "$REAL_BIN"
 remove_file "$DESKTOP_FILE"
 remove_file "$ICON_FILE"
 
-# Older installs used other icon names/sizes or an SVG; clean those up too.
+# Older installs used PNG icons; clean those up too.
 for rel in $LEGACY_ICON_RELS; do
     remove_file "$SHARE_DIR/$rel"
 done

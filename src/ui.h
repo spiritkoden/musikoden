@@ -57,9 +57,11 @@ typedef struct {
     const char *desc;
 } UI_KeyHint;
 
-void ui_help_overlay(UI *ui, SDL_Renderer *r, const char *title,
-                     const UI_KeyHint *hints, int n,
-                     const char *footnote);
+// Draws the shortcut list, scrolling it when it does not fit the window.
+// `first_visible` is optional; on return it holds the number of rows drawn.
+int ui_help_overlay(UI *ui, SDL_Renderer *r, const char *title,
+                    const UI_KeyHint *hints, int n,
+                    const char *footnote, int *first_visible);
 
 void ui_confirm_overlay(UI *ui, SDL_Renderer *r, const char *title,
                         const char *message, const UI_KeyHint *answers, int n,
